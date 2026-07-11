@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  body { margin:0; background:#0e0a12; }
+  canvas { display:block; margin:40px auto; background:#1c1620; border:2px solid #7a5a2a; }
+</style>
+</head>
+<body>
+<canvas id="canvas" width="900" height="560"></canvas>
+<script>
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d");
+
+let lastTime = performance.now();
+
+// --- Player ---
+const player = {
+  x: 450,
+  y: 280,
+  radius: 16,
+  speed: 220 // pixels per second
+};
+
+// --- Input tracking ---
+const keys = {};
+window.addEventListener("keydown", (e) => {
+  keys[e.key.toLowerCase()] = true;
+});
+window.addEventListener("keyup", (e) => {
+  keys[e.key.toLowerCase()] = false;
+});
+
+function gameLoop(now) {
+  const dt = (now - lastTime) / 1000;
+  lastTime = now;
+
+  update(dt);
+  render();
+
+  requestAnimationFrame(gameLoop);
+}
+
+function update(dt) {
+    if (keys["w"] || keys["arrowup"]) {
+        player.y -= player.speed * dt;
+    }
+    if (keys["s"] || keys["arrowdown"]) {
+        player.y += player.speed * dt;
+    }
+    if (keys["a"] || keys["arrowleft"]) {
+        player.x -= player.speed * dt;
+    }
+    if (keys["d"] || keys["arrowright"]) {
+        player.x += player.speed * dt;
+    }
+  // TODO: check keys.w / keys.a / keys.s / keys.d (or arrow keys if you prefer)
+  // and move player.x / player.y accordingly.
+  // Remember: speed is in pixels PER SECOND, and dt is the fraction of a second
+  // that passed this frame — how do you combine speed and dt to get
+  // "how far to move this frame"?
+
+}
+
+function render() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  ctx.beginPath();
+  ctx.arc(player.x, player.y, player.radius, 0, Math.PI * 2);
+  ctx.fillStyle = "#e0c060";
+  ctx.fill();
+}
+
+requestAnimationFrame(gameLoop);
+</script>
+</body>
+</html>
