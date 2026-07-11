@@ -31,6 +31,18 @@ canvas.addEventListener("mousemove", (e) => {// Get mouse position relative to c
   mouse.y = e.clientY - rect.top; 
 });
 
+// --- Attack state ---
+let attackTimer = 0; // counts down while attack is active
+const attackDuration = 0.15; // seconds the hitbox is visible
+const attackRange = 50; // how far in front of the player it appears
+
+canvas.addEventListener("click", () => {
+  if (attackTimer <= 0) {
+    attackTimer = attackDuration;
+  }
+});
+
+
 // --- Input tracking ---
 const keys = {};
 window.addEventListener("keydown", (e) => {
@@ -63,14 +75,13 @@ function update(dt) {
     if (keys["d"] || keys["arrowright"]) {
         player.x += player.speed * dt;
     }
-  // TODO: check keys.w / keys.a / keys.s / keys.d (or arrow keys if you prefer)
-  // and move player.x / player.y accordingly.
-  // Remember: speed is in pixels PER SECOND, and dt is the fraction of a second
-  // that passed this frame — how do you combine speed and dt to get
-  // "how far to move this frame"?
-  const deltaX = mouse.x - player.x;
-  const deltaY = mouse.y - player.y;
-  player.facing = Math.atan2(deltaY, deltaX);
+    const deltaX = mouse.x - player.x;
+    const deltaY = mouse.y - player.y;
+    player.facing = Math.atan2(deltaY, deltaX);
+
+    if (attackTimer > 0) {
+        attackTimer -= dt;
+    }
 }
 
 function render() {
@@ -91,6 +102,15 @@ function render() {
   ctx.strokeStyle = "#ffffff";
   ctx.lineWidth = 3;
   ctx.stroke();
+
+  if (attackTimer > 0) {
+    const hitboxX = player.x + Math.cos(player.facing) * attackRange;
+    const hitboxY = player.y + Math.sin(player.facing) * attackRange;
+    ctx.beginPath();
+    ctx.arc(hitboxX, hitboxY, 10, 0, Math.PI * 2);
+    ctx.fillStyle = "rgba(255, 0, 0, 0.5)";
+    ctx.fill();
+  }
 }
 
 requestAnimationFrame(gameLoop);
