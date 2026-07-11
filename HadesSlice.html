@@ -52,6 +52,53 @@ window.addEventListener("keyup", (e) => {
   keys[e.key.toLowerCase()] = false;
 });
 
+// --- Dash state ---
+const dash = {
+  active: false,
+  timer: 0,
+  duration: 0.2,      // how long the dash lasts
+  speed: 600,          // pixels per second while dashing
+  cooldown: 0,         // counts down after a dash ends
+  cooldownDuration: 0.5,
+  dirX: 0,
+  dirY: 0,
+  invulnerable: false  // true while dashing = i-frames
+};
+
+window.addEventListener("keydown", (e) => {
+  if (e.key === " " ) {
+    if (!dash.active && dash.cooldown <= 0) {
+      dash.active = true;
+      dash.timer = dash.duration;
+      dash.invulnerable = true;
+
+      // Determine dash direction
+      let dirX = 0;
+      let dirY = 0;
+      if (keys["w"] || keys["arrowup"]) dirY -= 1;
+      if (keys["s"] || keys["arrowdown"]) dirY += 1;
+      if (keys["a"] || keys["arrowleft"]) dirX -= 1;
+      if (keys["d"] || keys["arrowright"]) dirX += 1;
+
+      // If no movement keys are pressed, use facing direction
+      if (dirX === 0 && dirY === 0) {
+        dirX = Math.cos(player.facing);
+        dirY = Math.sin(player.facing);
+      }
+
+      // Normalize the direction vector
+      const length = Math.sqrt(dirX * dirX + dirY * dirY);
+      if (length > 0) {
+        dash.dirX = dirX / length;
+        dash.dirY = dirY / length;
+      } else {
+        dash.dirX = 0;
+        dash.dirY = 0;
+      }
+    }
+  }
+});
+
 function gameLoop(now) {
   const dt = (now - lastTime) / 1000;
   lastTime = now;
@@ -81,6 +128,20 @@ function update(dt) {
 
     if (attackTimer > 0) {
         attackTimer -= dt;
+    }
+
+    if (dash.active) { // If dash is active, move the player in the dash direction
+        dash.timer -= dt; // Decrease the dash timer
+        if (dash.timer <= 0) { // If dash duration is over, reset dash state
+            dash.active = false;
+            dash.invulnerable = false;
+            dash.cooldown = dash.cooldownDuration;// Start the cooldown timer
+        } else {
+            player.x += dash.dirX * dash.speed * dt; // Move the player in the dash direction
+            player.y += dash.dirY * dash.speed * dt;
+        }
+    } else if (dash.cooldown > 0) { // If dash is not active but cooldown is still running, decrease the cooldown timer
+        dash.cooldown -= dt; // Decrease the cooldown timer
     }
 }
 
