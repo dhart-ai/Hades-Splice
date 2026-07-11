@@ -25,10 +25,10 @@ const player = {
 
 // --- Mouse tracking ---
 const mouse = { x: 0, y: 0 };
-canvas.addEventListener("mousemove", (e) => {// Get mouse position relative to canvas
+canvas.addEventListener("mousemove", (e) => { // Get mouse position relative to canvas
   const rect = canvas.getBoundingClientRect(); // Get canvas position
   mouse.x = e.clientX - rect.left; // Get mouse position relative to canvas
-  mouse.y = e.clientY - rect.top; 
+  mouse.y = e.clientY - rect.top;
 });
 
 // --- Attack state ---
@@ -41,7 +41,6 @@ canvas.addEventListener("click", () => {
     attackTimer = attackDuration;
   }
 });
-
 
 // --- Input tracking ---
 const keys = {};
@@ -66,7 +65,7 @@ const dash = {
 };
 
 window.addEventListener("keydown", (e) => {
-  if (e.key === " " ) {
+  if (e.key === " ") {
     if (!dash.active && dash.cooldown <= 0) {
       dash.active = true;
       dash.timer = dash.duration;
@@ -99,9 +98,74 @@ window.addEventListener("keydown", (e) => {
   }
 });
 
+// --- Shade enemy ---
+const shade = {
+  x: 700,
+  y: 150,
+  radius: 18,
+  state: "idle",       // "idle" | "telegraph" | "lunge" | "cooldown"
+  stateTimer: 0,
+  telegraphDuration: 0.6,
+  lungeDuration: 0.25,
+  lungeSpeed: 500,
+  cooldownDuration: 0.8,
+  lungeDirX: 0,
+  lungeDirY: 0,
+  chaseSpeed: 120,
+  aggroRange: 400,     // distance at which it notices the player
+  attackRange: 60      // distance at which it starts telegraphing instead of chasing
+};
+
+function updateShade(dt) {
+  const dx = player.x - shade.x;
+  const dy = player.y - shade.y;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+
+  if (shade.state === "idle") {
+    if (dist < shade.aggroRange) { // Player is within aggro range
+      if (dist > shade.attackRange) { // Player is outside attack range, chase the player
+        const normX = dx / dist; // making the vector have a length of 1
+        const normY = dy / dist;
+        shade.x += normX * shade.chaseSpeed * dt;
+        shade.y += normY * shade.chaseSpeed * dt; // Move shade toward the player
+      } else {
+        // Start telegraphing
+        shade.state = "telegraph";
+        shade.stateTimer = shade.telegraphDuration;
+      }
+    }
+  }
+  else if (shade.state === "telegraph") {
+    shade.stateTimer -= dt; // Count down the telegraph timer
+    if (shade.stateTimer <= 0) { // Telegraphing is done, start lunging
+      shade.state = "lunge"; // Change state to lunge
+      shade.stateTimer = shade.lungeDuration;
+      const normX = dx / dist;
+      const normY = dy / dist;
+      shade.lungeDirX = normX;
+      shade.lungeDirY = normY; // Store the current direction toward the player
+    }
+  }
+  else if (shade.state === "lunge") {
+    shade.stateTimer -= dt; // Count down the lunge timer
+    shade.x += shade.lungeDirX * shade.lungeSpeed * dt;
+    shade.y += shade.lungeDirY * shade.lungeSpeed * dt;
+    if (shade.stateTimer <= 0) { // Lunge is done, start cooldown
+      shade.state = "cooldown";
+      shade.stateTimer = shade.cooldownDuration;
+    }
+  }
+  else if (shade.state === "cooldown") {
+    shade.stateTimer -= dt; // Count down the cooldown timer
+    if (shade.stateTimer <= 0) { // Cooldown is done, return to idle
+      shade.state = "idle";
+    }
+  }
+}
+
 function gameLoop(now) {
-  const dt = (now - lastTime) / 1000;
-  lastTime = now;
+  const dt = (now - lastTime) / 1000; // Convert milliseconds to seconds
+  lastTime = now; // Update lastTime for the next frame
 
   update(dt);
   render();
@@ -110,47 +174,51 @@ function gameLoop(now) {
 }
 
 function update(dt) {
-    if (keys["w"] || keys["arrowup"]) {
-        player.y -= player.speed * dt;
-    }
-    if (keys["s"] || keys["arrowdown"]) {
-        player.y += player.speed * dt;
-    }
-    if (keys["a"] || keys["arrowleft"]) {
-        player.x -= player.speed * dt;
-    }
-    if (keys["d"] || keys["arrowright"]) {
-        player.x += player.speed * dt;
-    }
-    const deltaX = mouse.x - player.x;
-    const deltaY = mouse.y - player.y;
-    player.facing = Math.atan2(deltaY, deltaX);
+  if (keys["w"] || keys["arrowup"]) {
+    player.y -= player.speed * dt;
+  }
+  if (keys["s"] || keys["arrowdown"]) {
+    player.y += player.speed * dt;
+  }
+  if (keys["a"] || keys["arrowleft"]) {
+    player.x -= player.speed * dt;
+  }
+  if (keys["d"] || keys["arrowright"]) {
+    player.x += player.speed * dt;
+  }
 
-    if (attackTimer > 0) {
-        attackTimer -= dt;
-    }
+  const deltaX = mouse.x - player.x;
+  const deltaY = mouse.y - player.y;
+  player.facing = Math.atan2(deltaY, deltaX);
 
-    if (dash.active) { // If dash is active, move the player in the dash direction
-        dash.timer -= dt; // Decrease the dash timer
-        if (dash.timer <= 0) { // If dash duration is over, reset dash state
-            dash.active = false;
-            dash.invulnerable = false;
-            dash.cooldown = dash.cooldownDuration;// Start the cooldown timer
-        } else {
-            player.x += dash.dirX * dash.speed * dt; // Move the player in the dash direction
-            player.y += dash.dirY * dash.speed * dt;
-        }
-    } else if (dash.cooldown > 0) { // If dash is not active but cooldown is still running, decrease the cooldown timer
-        dash.cooldown -= dt; // Decrease the cooldown timer
+  if (attackTimer > 0) {
+    attackTimer -= dt;
+  }
+
+  if (dash.active) { // If dash is active, move the player in the dash direction
+    dash.timer -= dt; // Decrease the dash timer
+    if (dash.timer <= 0) { // If dash duration is over, reset dash state
+      dash.active = false;
+      dash.invulnerable = false;
+      dash.cooldown = dash.cooldownDuration; // Start the cooldown timer
+    } else {
+      player.x += dash.dirX * dash.speed * dt; // Move the player in the dash direction
+      player.y += dash.dirY * dash.speed * dt;
     }
+  } else if (dash.cooldown > 0) { // If dash is not active but cooldown is still running, decrease it
+    dash.cooldown -= dt;
+  }
+
+  updateShade(dt);
 }
 
 function render() {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
+  // Draw player
   ctx.beginPath();
-  ctx.arc(player.x, player.y, player.radius, 0, Math.PI * 2);// Draw player by using ctx.arc() with player.x, player.y, and player.radius
-  ctx.fillStyle = "#e0c060";    
+  ctx.arc(player.x, player.y, player.radius, 0, Math.PI * 2);
+  ctx.fillStyle = "#e0c060";
   ctx.fill();
 
   // Facing indicator line
@@ -164,6 +232,7 @@ function render() {
   ctx.lineWidth = 3;
   ctx.stroke();
 
+  // Attack hitbox (only while attacking)
   if (attackTimer > 0) {
     const hitboxX = player.x + Math.cos(player.facing) * attackRange;
     const hitboxY = player.y + Math.sin(player.facing) * attackRange;
@@ -172,6 +241,12 @@ function render() {
     ctx.fillStyle = "rgba(255, 0, 0, 0.5)";
     ctx.fill();
   }
+
+  // Draw Shade (every frame, regardless of attack state)
+  ctx.beginPath();
+  ctx.arc(shade.x, shade.y, shade.radius, 0, Math.PI * 2);
+  ctx.fillStyle = shade.state === "telegraph" ? "#ff8080" : "#a03030"; // lighter red = telegraphing (a warning cue)
+  ctx.fill();
 }
 
 requestAnimationFrame(gameLoop);
