@@ -19,8 +19,17 @@ const player = {
   x: 450,
   y: 280,
   radius: 16,
-  speed: 220 // pixels per second
+  speed: 220,
+  facing: 0 // angle in radians, toward the mouse
 };
+
+// --- Mouse tracking ---
+const mouse = { x: 0, y: 0 };
+canvas.addEventListener("mousemove", (e) => {// Get mouse position relative to canvas
+  const rect = canvas.getBoundingClientRect(); // Get canvas position
+  mouse.x = e.clientX - rect.left; // Get mouse position relative to canvas
+  mouse.y = e.clientY - rect.top; 
+});
 
 // --- Input tracking ---
 const keys = {};
@@ -59,16 +68,29 @@ function update(dt) {
   // Remember: speed is in pixels PER SECOND, and dt is the fraction of a second
   // that passed this frame — how do you combine speed and dt to get
   // "how far to move this frame"?
-
+  const deltaX = mouse.x - player.x;
+  const deltaY = mouse.y - player.y;
+  player.facing = Math.atan2(deltaY, deltaX);
 }
 
 function render() {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
   ctx.beginPath();
-  ctx.arc(player.x, player.y, player.radius, 0, Math.PI * 2);
-  ctx.fillStyle = "#e0c060";
+  ctx.arc(player.x, player.y, player.radius, 0, Math.PI * 2);// Draw player by using ctx.arc() with player.x, player.y, and player.radius
+  ctx.fillStyle = "#e0c060";    
   ctx.fill();
+
+  // Facing indicator line
+  ctx.beginPath();
+  ctx.moveTo(player.x, player.y);
+  ctx.lineTo(
+    player.x + Math.cos(player.facing) * 30,
+    player.y + Math.sin(player.facing) * 30
+  );
+  ctx.strokeStyle = "#ffffff";
+  ctx.lineWidth = 3;
+  ctx.stroke();
 }
 
 requestAnimationFrame(gameLoop);
