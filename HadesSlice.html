@@ -13,6 +13,7 @@ const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d");
 
 let lastTime = performance.now();
+let gameOver = false;
 
 // --- Player ---
 const player = {
@@ -118,7 +119,8 @@ const shade = {
   attackRange: 60,     // distance at which it starts telegraphing instead of chasing
   health: 40,
   maxHealth: 40,
-  hitThisSwing: false,   // prevents one attack from hitting multiple times
+  hitThisSwing: false,       // prevents one attack from hitting multiple times
+  hitPlayerThisLunge: false, // prevents one lunge from hitting the player multiple times
   dead: false
 };
 
@@ -219,6 +221,7 @@ function gameLoop(now) {
 }
 
 function update(dt) {
+  if (gameOver) return;
   if (keys["w"] || keys["arrowup"]) {
     player.y -= player.speed * dt;
   }
@@ -257,6 +260,11 @@ function update(dt) {
   updateShade(dt);
   checkPlayerAttackHitsShade();
   checkShadeHitsPlayer();
+
+  // Lose condition: player health depleted
+  if (player.health <= 0) {
+    gameOver = true;
+  }
 }
 
 
@@ -304,6 +312,24 @@ function render() {
     ctx.fillRect(shade.x - barWidth / 2, shade.y - shade.radius - 12, barWidth, 6); // background bar
     ctx.fillStyle = "#4caf50";
     ctx.fillRect(shade.x - barWidth / 2, shade.y - shade.radius - 12, barWidth * healthPercent, 6);
+  }
+
+  // Player health bar (top-left corner)
+  const playerBarWidth = 200;
+  const playerHealthPercent = player.health / player.maxHealth; // Calculate health percentage by dividing current health by max health
+  ctx.fillStyle = "#333";
+  ctx.fillRect(20, 20, playerBarWidth, 16);
+  ctx.fillStyle = "#e05050";
+  ctx.fillRect(20, 20, playerBarWidth * playerHealthPercent, 16);
+
+  // Game over overlay
+  if (gameOver) {
+    ctx.fillStyle = "rgba(0,0,0,0.6)";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "48px sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("YOU DIED", canvas.width / 2, canvas.height / 2);
   }
 }
 
