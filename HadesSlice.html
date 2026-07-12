@@ -20,7 +20,9 @@ const player = {
   y: 280,
   radius: 16,
   speed: 220,
-  facing: 0 // angle in radians, toward the mouse
+  facing: 0, // angle in radians, toward the mouse
+  health: 100,
+  maxHealth: 100
 };
 
 // --- Mouse tracking ---
@@ -113,14 +115,20 @@ const shade = {
   lungeDirY: 0,
   chaseSpeed: 120,
   aggroRange: 400,     // distance at which it notices the player
-  attackRange: 60      // distance at which it starts telegraphing instead of chasing
+  attackRange: 60,     // distance at which it starts telegraphing instead of chasing
+  health: 40,
+  maxHealth: 40,
+  hitThisSwing: false,   // prevents one attack from hitting multiple times
+  dead: false
 };
 
 function updateShade(dt) {
+  if (shade.dead) return;
+
   const dx = player.x - shade.x;
   const dy = player.y - shade.y;
   const dist = Math.sqrt(dx * dx + dy * dy);
-
+  // ... rest stays the same
   if (shade.state === "idle") {
     if (dist < shade.aggroRange) { // Player is within aggro range
       if (dist > shade.attackRange) { // Player is outside attack range, chase the player
@@ -161,6 +169,43 @@ function updateShade(dt) {
       shade.state = "idle";
     }
   }
+}
+
+
+function checkPlayerAttackHitsShade() {
+  if (attackTimer <= 0) {
+    shade.hitThisSwing = false;
+    return;
+  }
+  const hitboxX = player.x + Math.cos(player.facing) * attackRange;
+  const hitboxY = player.y + Math.sin(player.facing) * attackRange;// calculate distance between (hitboxX, hitboxY) and (shade.x, shade.y)
+
+  const dx = hitboxX - shade.x;
+  const dy = hitboxY - shade.y;
+  const distance = Math.sqrt(dx * dx + dy * dy);
+
+  if (distance < (10 + shade.radius) && !shade.hitThisSwing) {
+    shade.health -= 10;
+    shade.hitThisSwing = true;
+    if (shade.health <= 0) {
+      shade.dead = true;
+    }
+  }
+}
+
+function checkShadeHitsPlayer() {
+  if (shade.dead) return;
+
+  if (shade.state !== "lunge") {
+    shade.hitPlayerThisLunge = false; // the NEXT lunge is able to hit again
+    return;
+  }
+  const distance = Math.sqrt((player.x - shade.x) ** 2 + (player.y - shade.y) ** 2);
+
+  if (distance < (player.radius + shade.radius) && !shade.hitPlayerThisLunge && !dash.invulnerable) {
+    player.health -= 15; // Subtract damage from player health
+    shade.hitPlayerThisLunge = true; // Mark that the shade has hit the player this lunge
+  } 
 }
 
 function gameLoop(now) {
@@ -210,7 +255,10 @@ function update(dt) {
   }
 
   updateShade(dt);
+  checkPlayerAttackHitsShade();
+  checkShadeHitsPlayer();
 }
+
 
 function render() {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -242,11 +290,21 @@ function render() {
     ctx.fill();
   }
 
-  // Draw Shade (every frame, regardless of attack state)
-  ctx.beginPath();
-  ctx.arc(shade.x, shade.y, shade.radius, 0, Math.PI * 2);
-  ctx.fillStyle = shade.state === "telegraph" ? "#ff8080" : "#a03030"; // lighter red = telegraphing (a warning cue)
-  ctx.fill();
+  // Draw Shade (only while alive)
+  if (!shade.dead) {
+    ctx.beginPath();
+    ctx.arc(shade.x, shade.y, shade.radius, 0, Math.PI * 2);
+    ctx.fillStyle = shade.state === "telegraph" ? "#ff8080" : "#a03030";
+    ctx.fill();
+
+    // Shade health bar
+    const barWidth = 40;
+    const healthPercent = shade.health / shade.maxHealth; // Calculate health percentage by dividing current health by max health
+    ctx.fillStyle = "#333";
+    ctx.fillRect(shade.x - barWidth / 2, shade.y - shade.radius - 12, barWidth, 6); // background bar
+    ctx.fillStyle = "#4caf50";
+    ctx.fillRect(shade.x - barWidth / 2, shade.y - shade.radius - 12, barWidth * healthPercent, 6);
+  }
 }
 
 requestAnimationFrame(gameLoop);
