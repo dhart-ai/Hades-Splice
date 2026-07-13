@@ -15,6 +15,10 @@ const ctx = canvas.getContext("2d");
 let lastTime = performance.now();
 let gameOver = false;
 
+// --- Assets ---
+const characterImg = new Image();
+characterImg.src = "character_transparent.png"; // must be in the same folder as this HTML file
+
 // --- Player ---
 const player = {
   x: 450,
@@ -271,11 +275,6 @@ function update(dt) {
 function render() {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-  // Draw player
-  ctx.beginPath();
-  ctx.arc(player.x, player.y, player.radius, 0, Math.PI * 2);
-  ctx.fillStyle = "#e0c060";
-  ctx.fill();
 
   // Facing indicator line
   ctx.beginPath();
@@ -331,6 +330,16 @@ function render() {
     ctx.textAlign = "center";
     ctx.fillText("YOU DIED", canvas.width / 2, canvas.height / 2);
   }
+  // Draw player using the character image
+  const imgHeight = player.radius * 4; // pick a height that looks right
+  const imgWidth = imgHeight * (characterImg.width / characterImg.height);
+  ctx.drawImage(
+    characterImg,
+    player.x - imgWidth / 2,
+    player.y - imgHeight / 2,
+    imgWidth,
+    imgHeight
+  );
 }
 
 requestAnimationFrame(gameLoop);
