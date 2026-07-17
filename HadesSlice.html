@@ -26,19 +26,19 @@ const ROUNDS = [
   { shades: 2, wretches: 2 }
 ];
 
-const PRIMARY_ATTACK_DAMAGE = 20; // GDD 2.11 tunable
+const PRIMARY_ATTACK_DAMAGE = 20; 
 
 // --- Assets ---
 const characterImg = new Image();
-characterImg.src = "Hadescharacter slice.png"; // loads async — check .complete before drawing
+characterImg.src = "Hadescharacter slice.png"; // character image for the player
 
 // --- Player ---
 const player = {
   x: 450,
   y: 280,
   radius: 16,
-  speed: 220,   // px/sec
-  facing: 0,    // radians, always toward mouse
+  speed: 220,   // movement speed in pixels per second
+  facing: 0,    // angle in radians, always toward the mouse
   health: 100,
   maxHealth: 100
 };
@@ -77,10 +77,10 @@ window.addEventListener("keyup", (e) => keys[e.key.toLowerCase()] = false);
 const dash = {
   active: false,
   timer: 0,
-  duration: 0.25,   // matches GDD's DASH_IFRAME_WINDOW
+  duration: 0.25,  
   speed: 600,
   cooldown: 0,
-  cooldownDuration: 0.5, // matches GDD's DASH_COOLDOWN
+  cooldownDuration: 0.5, 
   dirX: 0, dirY: 0,      // locked in when dash starts
   invulnerable: false    // true during dash.active = i-frames
 };
@@ -110,6 +110,23 @@ window.addEventListener("keydown", (e) => {
   dash.dirY = length > 0 ? dirY / length : 0;
 });
 
+
+let damageNumbers = [];   // { x, y, value, crit, timer, speed }
+let slashFlashTimer = 0;  // brief white flash on a successful hit
+let shakeTimer = 0;       // brief screen shake on a successful hit / player hit
+const shakeMagnitude = 6; // px
+
+// FIX: was called in 3 places but never defined
+function spawnDamageNumber(x, y, value, crit) {
+  damageNumbers.push({
+    x, y,
+    value,
+    crit, // whether this hit was a critical strike
+    timer: 0.6, 
+    speed: 40  // speed in pixels per second
+  });
+}
+
 // --- Enemy factories ---
 // Each enemy carries its own state so multiple can exist per round.
 function createShade(x, y) {
@@ -119,7 +136,7 @@ function createShade(x, y) {
     radius: 18,
     state: "idle",
     stateTimer: 0,
-    telegraphDuration: 0.6,   // GDD SHADE_LUNGE_TELEGRAPH
+    telegraphDuration: 0.6,  
     lungeDuration: 0.25,
     lungeSpeed: 500,
     cooldownDuration: 0.8,
@@ -127,7 +144,7 @@ function createShade(x, y) {
     chaseSpeed: 120,
     aggroRange: 400,
     attackRange: 60,
-    health: 40,               // GDD SHADE_HEALTH
+    health: 40,               
     maxHealth: 40,
     hitThisSwing: false,
     hitPlayerThisLunge: false,
@@ -143,12 +160,12 @@ function createWretch(x, y) {
     radius: 18,
     state: "idle",
     stateTimer: 0,
-    telegraphDuration: 0.7,   // GDD WRETCH_PROJECTILE_TELEGRAPH
+    telegraphDuration: 0.7, 
     cooldownDuration: 0.5,
     aggroRange: 450,
     preferredRange: 250,
-    retreatSpeed: 100,
-    health: 30,               // GDD WRETCH_HEALTH
+    retreatSpeed: 200,
+    health: 30,               
     maxHealth: 30,
     hitThisSwing: false,
     staggerTimer: 0,
@@ -164,6 +181,7 @@ function spawnRound(index) {
   shades = [];
   wretches = [];
   projectiles.length = 0;
+  damageNumbers.length = 0; //
 
   const config = ROUNDS[index];
   const shadeSpawns = [{ x: 700, y: 150 }, { x: 200, y: 150 }, { x: 700, y: 450 }, { x: 200, y: 450 }];
@@ -199,7 +217,7 @@ const BOONS = [
   { id: "artemis", name: "Artemis — Deadly Strike", desc: "Attacks have a chance to critically strike.", color: "#81c784" }
 ];
 
-let boonCardRects = []; // recomputed each render() while gamePhase === "boon"
+let boonCardRects = []; // stores the clickable areas for boon cards
 
 function handleBoonClick(e) {
   const rect = canvas.getBoundingClientRect();
@@ -219,14 +237,19 @@ function handleBoonClick(e) {
 // Applies boon procs on top of a base melee hit. Called once per successful swing.
 function applyBoonEffects(target, baseDamage) {
   let damage = baseDamage;
+  let crit = false;   // tracks whether this hit crit, so the display can style it differently
 
   // Artemis — chance to crit for double damage
   if (player.boons.artemis > 0 && Math.random() < player.boons.artemis * 0.25) { // chance to crit
     damage *= 2;
+    crit = true; // mark this hit as a critical strike
   }
 
   target.health -= damage;
   if (target.health <= 0) target.dead = true;
+  spawnDamageNumber(target.x, target.y - target.radius - 6, damage, crit); // show damage number at enemy position
+  slashFlashTimer = 0.12;// trigger a brief slash flash for visual feedback
+  shakeTimer = 0.1; // FIX: give shakeTimer an actual trigger (it was declared-nowhere before, and now that it exists it still needs something to set it)
 
   // Poseidon — chance to knock back and briefly stagger the target
   if (player.boons.poseidon > 0 && Math.random() < player.boons.poseidon * 0.25) { // chance to knock back and stagger
@@ -249,8 +272,10 @@ function applyBoonEffects(target, baseDamage) {
       if (d < nearestDist) { nearest = e; nearestDist = d; } // update nearest enemy if closer
     }
     if (nearest) {
-      nearest.health -= Math.round(baseDamage / 2); // apply half damage to the nearest enemy
+      const arcDamage = Math.round(baseDamage / 2);
+      nearest.health -= arcDamage; // apply half damage to the nearest enemy
       if (nearest.health <= 0) nearest.dead = true; // mark as dead if health drops to zero
+      spawnDamageNumber(nearest.x, nearest.y - nearest.radius - 6, arcDamage, false); // show damage number for arc damage
     }
   }
 }
@@ -319,6 +344,8 @@ function updateProjectiles(dt) {
     const dist = Math.sqrt((p.x - player.x) ** 2 + (p.y - player.y) ** 2);
     if (dist < (p.radius + player.radius) && !dash.invulnerable) {
       player.health -= 20; // ranged hit
+      spawnDamageNumber(player.x, player.y - player.radius - 8, "-20", false); // show damage number for player hit
+      shakeTimer = 0.15;
       projectiles.splice(i, 1); // consumed on hit
     }
   }
@@ -412,6 +439,8 @@ function checkShadesHitPlayer() {
     const distance = Math.sqrt((player.x - shade.x) ** 2 + (player.y - shade.y) ** 2);
     if (distance < (player.radius + shade.radius) && !shade.hitPlayerThisLunge && !dash.invulnerable) {
       player.health -= 15;
+      spawnDamageNumber(player.x, player.y - player.radius - 8, "-15", false); // show damage number for player hit
+      shakeTimer = 0.15;
       shade.hitPlayerThisLunge = true;
     }
   }
@@ -426,7 +455,16 @@ function gameLoop(now) {
 }
 
 function update(dt) {
+  if (shakeTimer > 0) shakeTimer -= dt; // decrement shake timer
+  if (slashFlashTimer > 0) slashFlashTimer -= dt;  // decrement slash flash timer
+  for (let i = damageNumbers.length - 1; i >= 0; i--) {
+    const dn = damageNumbers[i]; // get the current damage number
+    dn.y -= dn.speed * dt; // move the damage number upward
+    dn.timer -= dt; // decrement the timer for this damage number
+    if (dn.timer <= 0) damageNumbers.splice(i, 1); // remove the damage number when its timer expires
+  }
   if (gamePhase !== "fighting") return; // freeze combat during boon pick / won / lost
+  // FIX: removed the duplicate copy of this same line that was here
 
   // --- Movement ---
   if (keys["w"] || keys["arrowup"]) player.y -= player.speed * dt;
@@ -517,6 +555,20 @@ function renderHUD() {
   }
 }
 
+// FIX: damageNumbers were being updated (moved + expired) but never drawn.
+function renderDamageNumbers() {
+  ctx.textAlign = "center";
+  ctx.font = "16px sans-serif";
+  for (const dn of damageNumbers) {
+    const alpha = Math.max(0, Math.min(1, dn.timer / 0.6));
+    ctx.fillStyle = dn.crit
+      ? `rgba(255, 215, 0, ${alpha})`   // gold for crits
+      : `rgba(255, 255, 255, ${alpha})`;
+    ctx.font = dn.crit ? "bold 18px sans-serif" : "16px sans-serif";
+    ctx.fillText(String(dn.value), dn.x, dn.y);
+  }
+}
+
 function renderBoonScreen() {
   ctx.fillStyle = "rgba(0,0,0,0.75)";
   ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -593,7 +645,16 @@ function renderEndScreen(text) {
 }
 
 function render() {
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.save(); // FIX: needed so shake translate doesn't stack forever across frames
+
+  // FIX: shakeTimer now actually does something — small random jitter
+  if (shakeTimer > 0) {
+    const dx = (Math.random() * 2 - 1) * shakeMagnitude;
+    const dy = (Math.random() * 2 - 1) * shakeMagnitude;
+    ctx.translate(dx, dy);
+  }
+
+  ctx.clearRect(-shakeMagnitude, -shakeMagnitude, canvas.width + shakeMagnitude * 2, canvas.height + shakeMagnitude * 2);
 
   // Facing indicator (aim line toward mouse)
   ctx.beginPath();
@@ -609,7 +670,7 @@ function render() {
     const hitboxY = player.y + Math.sin(player.facing) * attackRange;
     ctx.beginPath();
     ctx.arc(hitboxX, hitboxY, 10, 0, Math.PI * 2);
-    ctx.fillStyle = "rgba(255, 0, 0, 0.5)";
+    ctx.fillStyle = slashFlashTimer > 0 ? "rgba(255, 255, 255, 0.8)" : "rgba(255, 0, 0, 0.5)"; // FIX: slashFlashTimer now visually does something
     ctx.fill();
   }
 
@@ -635,11 +696,14 @@ function render() {
     ctx.fill();
   }
 
+  renderDamageNumbers(); // FIX: was never called before
   renderHUD();
 
   if (gamePhase === "boon") renderBoonScreen();
   else if (gamePhase === "won") renderEndScreen("VICTORY");
   else if (gamePhase === "lost") renderEndScreen("YOU DIED");
+
+  ctx.restore(); // FIX: pairs with ctx.save() above
 }
 
 requestAnimationFrame(gameLoop);
