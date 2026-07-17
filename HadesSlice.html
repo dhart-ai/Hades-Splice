@@ -13,7 +13,20 @@ const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d");
 
 let lastTime = performance.now();
-let gameOver = false; // stops update() once true; render() shows death screen
+
+// --- Game phase / round state ---
+// 'fighting' = combat active | 'boon' = pick a boon | 'won' | 'lost'
+let gamePhase = "fighting";
+let roundIndex = 0;
+
+// Round composition: how many Shades/Wretches spawn each round
+const ROUNDS = [
+  { shades: 2, wretches: 0 },
+  { shades: 0, wretches: 1 },
+  { shades: 2, wretches: 2 }
+];
+
+const PRIMARY_ATTACK_DAMAGE = 20; // GDD 2.11 tunable
 
 // --- Assets ---
 const characterImg = new Image();
@@ -30,6 +43,9 @@ const player = {
   maxHealth: 100
 };
 
+// Boon levels — 0 means not picked yet; each pick adds +25% proc chance
+player.boons = { zeus: 0, poseidon: 0, artemis: 0 };
+
 // --- Mouse tracking (canvas-relative coords) ---
 const mouse = { x: 0, y: 0 };
 canvas.addEventListener("mousemove", (e) => {
@@ -43,7 +59,12 @@ let attackTimer = 0;
 const attackDuration = 0.15; // hitbox lifetime after a click
 const attackRange = 50;      // hitbox distance in front of player
 
-canvas.addEventListener("click", () => {
+canvas.addEventListener("click", (e) => {
+  if (gamePhase === "boon") {
+    handleBoonClick(e);
+    return;
+  }
+  if (gamePhase !== "fighting") return; // no attacking on won/lost screens
   if (attackTimer <= 0) attackTimer = attackDuration; // ignore clicks mid-swing
 });
 
@@ -56,16 +77,17 @@ window.addEventListener("keyup", (e) => keys[e.key.toLowerCase()] = false);
 const dash = {
   active: false,
   timer: 0,
-  duration: 0.2,
+  duration: 0.25,   // matches GDD's DASH_IFRAME_WINDOW
   speed: 600,
   cooldown: 0,
-  cooldownDuration: 0.5,
+  cooldownDuration: 0.5, // matches GDD's DASH_COOLDOWN
   dirX: 0, dirY: 0,      // locked in when dash starts
   invulnerable: false    // true during dash.active = i-frames
 };
 
 window.addEventListener("keydown", (e) => {
   if (e.key !== " ") return;
+  if (gamePhase !== "fighting") return;
   if (dash.active || dash.cooldown > 0) return;
 
   dash.active = true;
@@ -88,29 +110,158 @@ window.addEventListener("keydown", (e) => {
   dash.dirY = length > 0 ? dirY / length : 0;
 });
 
-// --- Wretch enemy (ranged) ---
-// State machine: idle -> telegraph -> cooldown -> idle
-const wretch = {
-  x: 150,
-  y: 500,
-  radius: 18,
-  state: "idle",
-  stateTimer: 0,
-  telegraphDuration: 0.7,
-  cooldownDuration: 0.5,
-  aggroRange: 450,
-  preferredRange: 250,   // tries to keep this much distance
-  retreatSpeed: 100,
-  health: 30,
-  maxHealth: 30,
-  hitThisSwing: false,   // same "don't double-hit on one swing" flag the Shade uses
-  dead: false
-};
+// --- Enemy factories ---
+// Each enemy carries its own state so multiple can exist per round.
+function createShade(x, y) {
+  return {
+    type: "shade",
+    x, y,
+    radius: 18,
+    state: "idle",
+    stateTimer: 0,
+    telegraphDuration: 0.6,   // GDD SHADE_LUNGE_TELEGRAPH
+    lungeDuration: 0.25,
+    lungeSpeed: 500,
+    cooldownDuration: 0.8,
+    lungeDirX: 0, lungeDirY: 0,
+    chaseSpeed: 120,
+    aggroRange: 400,
+    attackRange: 60,
+    health: 40,               // GDD SHADE_HEALTH
+    maxHealth: 40,
+    hitThisSwing: false,
+    hitPlayerThisLunge: false,
+    staggerTimer: 0,          // Poseidon boon knockback/stun window
+    dead: false
+  };
+}
 
+function createWretch(x, y) {
+  return {
+    type: "wretch",
+    x, y,
+    radius: 18,
+    state: "idle",
+    stateTimer: 0,
+    telegraphDuration: 0.7,   // GDD WRETCH_PROJECTILE_TELEGRAPH
+    cooldownDuration: 0.5,
+    aggroRange: 450,
+    preferredRange: 250,
+    retreatSpeed: 100,
+    health: 30,               // GDD WRETCH_HEALTH
+    maxHealth: 30,
+    hitThisSwing: false,
+    staggerTimer: 0,
+    dead: false
+  };
+}
+
+let shades = [];
+let wretches = [];
 const projectiles = []; // { x, y, dirX, dirY, speed, radius }
 
-function updateWretch(dt) {
+function spawnRound(index) {
+  shades = [];
+  wretches = [];
+  projectiles.length = 0;
+
+  const config = ROUNDS[index];
+  const shadeSpawns = [{ x: 700, y: 150 }, { x: 200, y: 150 }, { x: 700, y: 450 }, { x: 200, y: 450 }];
+  const wretchSpawns = [{ x: 150, y: 500 }, { x: 750, y: 500 }, { x: 150, y: 80 }, { x: 750, y: 80 }];
+
+  for (let i = 0; i < config.shades; i++) shades.push(createShade(shadeSpawns[i].x, shadeSpawns[i].y));
+  for (let i = 0; i < config.wretches; i++) wretches.push(createWretch(wretchSpawns[i].x, wretchSpawns[i].y));
+
+  gamePhase = "fighting";
+}
+
+spawnRound(0); // kick off Round 1
+
+function allDead(list) {
+  return list.every(e => e.dead);
+}
+
+function checkRoundClear() {
+  if (gamePhase !== "fighting") return;
+  if (!allDead(shades) || !allDead(wretches)) return;
+
+  if (roundIndex < ROUNDS.length - 1) {
+    gamePhase = "boon"; // offer a boon before the next round
+  } else {
+    gamePhase = "won"; // final round cleared
+  }
+}
+
+// --- Boon system ---
+const BOONS = [
+  { id: "zeus", name: "Zeus — Chain Lightning", desc: "Attacks have a chance to arc to a nearby enemy.", color: "#ffe066" },
+  { id: "poseidon", name: "Poseidon — Tempest Strike", desc: "Attacks have a chance to knock back & stagger.", color: "#4fc3f7" },
+  { id: "artemis", name: "Artemis — Deadly Strike", desc: "Attacks have a chance to critically strike.", color: "#81c784" }
+];
+
+let boonCardRects = []; // recomputed each render() while gamePhase === "boon"
+
+function handleBoonClick(e) {
+  const rect = canvas.getBoundingClientRect();
+  const clickX = e.clientX - rect.left;
+  const clickY = e.clientY - rect.top;
+
+  for (const card of boonCardRects) {
+    if (clickX >= card.x && clickX <= card.x + card.w && clickY >= card.y && clickY <= card.y + card.h) {
+      player.boons[card.id] += 1; // stacking a god raises its proc chance
+      roundIndex += 1;
+      spawnRound(roundIndex);
+      return;
+    }
+  }
+}
+
+// Applies boon procs on top of a base melee hit. Called once per successful swing.
+function applyBoonEffects(target, baseDamage) {
+  let damage = baseDamage;
+
+  // Artemis — chance to crit for double damage
+  if (player.boons.artemis > 0 && Math.random() < player.boons.artemis * 0.25) { // chance to crit
+    damage *= 2;
+  }
+
+  target.health -= damage;
+  if (target.health <= 0) target.dead = true;
+
+  // Poseidon — chance to knock back and briefly stagger the target
+  if (player.boons.poseidon > 0 && Math.random() < player.boons.poseidon * 0.25) { // chance to knock back and stagger
+    const dx = target.x - player.x; // direction vector from player to target
+    const dy = target.y - player.y;
+    const dist = Math.sqrt(dx * dx + dy * dy) || 1; // prevent division by zero
+    target.x = Math.max(target.radius, Math.min(canvas.width - target.radius, target.x + (dx / dist) * 60)); // move target back along the direction vector
+    target.y = Math.max(target.radius, Math.min(canvas.height - target.radius, target.y + (dy / dist) * 60)); // move target back along the direction vector
+    target.staggerTimer = 0.5;
+    target.state = "idle";
+    target.stateTimer = 0;
+  }
+
+  // Zeus — chance to arc to the nearest other living enemy for half damage
+  if (player.boons.zeus > 0 && Math.random() < player.boons.zeus * 0.25) { // chance to arc to nearest enemy
+    const others = [...shades, ...wretches].filter(e => e !== target && !e.dead); // find other living enemies
+    let nearest = null, nearestDist = 150; // arc only reaches nearby enemies
+    for (const e of others) { // find the nearest enemy within arc range
+      const d = Math.hypot(e.x - target.x, e.y - target.y);// distance to this enemy
+      if (d < nearestDist) { nearest = e; nearestDist = d; } // update nearest enemy if closer
+    }
+    if (nearest) {
+      nearest.health -= Math.round(baseDamage / 2); // apply half damage to the nearest enemy
+      if (nearest.health <= 0) nearest.dead = true; // mark as dead if health drops to zero
+    }
+  }
+}
+
+function updateWretch(wretch, dt) {
   if (wretch.dead) return;
+
+  if (wretch.staggerTimer > 0) { // Poseidon stagger overrides normal behavior
+    wretch.staggerTimer -= dt;
+    return;
+  }
 
   const dx = player.x - wretch.x;
   const dy = player.y - wretch.y;
@@ -167,37 +318,19 @@ function updateProjectiles(dt) {
 
     const dist = Math.sqrt((p.x - player.x) ** 2 + (p.y - player.y) ** 2);
     if (dist < (p.radius + player.radius) && !dash.invulnerable) {
-      player.health -= 20; // ranged hit — harder-hitting than the Shade's melee-adjacent contact damage
+      player.health -= 20; // ranged hit
       projectiles.splice(i, 1); // consumed on hit
     }
   }
 }
 
-// --- Shade enemy (melee) ---
-// State machine: idle -> telegraph -> lunge -> cooldown -> idle
-const shade = {
-  x: 700,
-  y: 150,
-  radius: 18,
-  state: "idle",
-  stateTimer: 0,
-  telegraphDuration: 0.6,
-  lungeDuration: 0.25,
-  lungeSpeed: 500,
-  cooldownDuration: 0.8,
-  lungeDirX: 0, lungeDirY: 0, // locked in when the lunge starts
-  chaseSpeed: 120,
-  aggroRange: 400,
-  attackRange: 60,
-  health: 40,
-  maxHealth: 40,
-  hitThisSwing: false,       // blocks one player swing from hitting twice
-  hitPlayerThisLunge: false, // blocks one lunge from hitting the player twice
-  dead: false
-};
-
-function updateShade(dt) {
+function updateShade(shade, dt) {
   if (shade.dead) return;
+
+  if (shade.staggerTimer > 0) { // Poseidon stagger overrides normal behavior
+    shade.staggerTimer -= dt;
+    return;
+  }
 
   const dx = player.x - shade.x;
   const dy = player.y - shade.y;
@@ -243,8 +376,8 @@ function updateShade(dt) {
   }
 }
 
-// Generic melee hit check — works for the Shade or the Wretch, since they
-// share the same hitThisSwing / health / dead fields
+// Melee hit check — works for the Shade or the Wretch, since both share
+// hitThisSwing / health / dead fields
 function checkPlayerAttackHitsEnemy(enemy) {
   if (enemy.dead) return;
 
@@ -261,25 +394,26 @@ function checkPlayerAttackHitsEnemy(enemy) {
   const distance = Math.sqrt(dx * dx + dy * dy);
 
   if (distance < (10 + enemy.radius) && !enemy.hitThisSwing) { // 10 = hitbox visual radius
-    enemy.health -= 10;
     enemy.hitThisSwing = true;
-    if (enemy.health <= 0) enemy.dead = true;
+    applyBoonEffects(enemy, PRIMARY_ATTACK_DAMAGE);
   }
 }
 
-function checkShadeHitsPlayer() {
-  if (shade.dead) return;
+function checkShadesHitPlayer() {
+  for (const shade of shades) {
+    if (shade.dead) continue;
 
-  // Contact damage only during an active lunge (telegraph is the warning, not a hit)
-  if (shade.state !== "lunge") {
-    shade.hitPlayerThisLunge = false;
-    return;
-  }
+    // Contact damage only during an active lunge (telegraph is the warning, not a hit)
+    if (shade.state !== "lunge") {
+      shade.hitPlayerThisLunge = false;
+      continue;
+    }
 
-  const distance = Math.sqrt((player.x - shade.x) ** 2 + (player.y - shade.y) ** 2);
-  if (distance < (player.radius + shade.radius) && !shade.hitPlayerThisLunge && !dash.invulnerable) {
-    player.health -= 15;
-    shade.hitPlayerThisLunge = true;
+    const distance = Math.sqrt((player.x - shade.x) ** 2 + (player.y - shade.y) ** 2);
+    if (distance < (player.radius + shade.radius) && !shade.hitPlayerThisLunge && !dash.invulnerable) {
+      player.health -= 15;
+      shade.hitPlayerThisLunge = true;
+    }
   }
 }
 
@@ -292,7 +426,7 @@ function gameLoop(now) {
 }
 
 function update(dt) {
-  if (gameOver) return;
+  if (gamePhase !== "fighting") return; // freeze combat during boon pick / won / lost
 
   // --- Movement ---
   if (keys["w"] || keys["arrowup"]) player.y -= player.speed * dt;
@@ -321,15 +455,141 @@ function update(dt) {
   }
 
   // --- Enemies & combat ---
-  updateShade(dt);
-  checkPlayerAttackHitsEnemy(shade);
-  checkShadeHitsPlayer();
+  for (const shade of shades) {
+    updateShade(shade, dt);
+    checkPlayerAttackHitsEnemy(shade);
+  }
+  checkShadesHitPlayer();
 
-  updateWretch(dt);
+  for (const wretch of wretches) {
+    updateWretch(wretch, dt);
+    checkPlayerAttackHitsEnemy(wretch);
+  }
   updateProjectiles(dt);
-  checkPlayerAttackHitsEnemy(wretch); // lets melee reach the Wretch too
 
-  if (player.health <= 0) gameOver = true;
+  if (player.health <= 0) {
+    gamePhase = "lost";
+    return;
+  }
+
+  checkRoundClear();
+}
+
+function drawEnemy(enemy, telegraphColor, normalColor) {
+  if (enemy.dead) return;
+  ctx.beginPath();
+  ctx.arc(enemy.x, enemy.y, enemy.radius, 0, Math.PI * 2);
+  ctx.fillStyle = enemy.staggerTimer > 0 ? "#ffffff" : (enemy.state === "telegraph" ? telegraphColor : normalColor);
+  ctx.fill();
+
+  const barWidth = 40;
+  const pct = enemy.health / enemy.maxHealth;
+  ctx.fillStyle = "#333";
+  ctx.fillRect(enemy.x - barWidth / 2, enemy.y - enemy.radius - 12, barWidth, 6);
+  ctx.fillStyle = "#4caf50";
+  ctx.fillRect(enemy.x - barWidth / 2, enemy.y - enemy.radius - 12, barWidth * pct, 6);
+}
+
+function renderHUD() {
+  // Player health bar (fixed corner position, unlike enemy bars which float above them)
+  const playerBarWidth = 200;
+  ctx.fillStyle = "#333";
+  ctx.fillRect(20, 20, playerBarWidth, 16);
+  ctx.fillStyle = "#e05050";
+  ctx.fillRect(20, 20, playerBarWidth * (player.health / player.maxHealth), 16);
+
+  // Round indicator
+  ctx.fillStyle = "#ffffff";
+  ctx.font = "18px sans-serif";
+  ctx.textAlign = "left";
+  ctx.fillText("Round " + (roundIndex + 1) + " / " + ROUNDS.length, 20, 56);
+
+  // Boon level icons
+  ctx.font = "14px sans-serif";
+  let bx = 20;
+  for (const b of BOONS) {
+    const lvl = player.boons[b.id];
+    if (lvl > 0) {
+      ctx.fillStyle = b.color;
+      ctx.fillText(b.name.split(" — ")[0] + " x" + lvl, bx, 78);
+      bx += 130;
+    }
+  }
+}
+
+function renderBoonScreen() {
+  ctx.fillStyle = "rgba(0,0,0,0.75)";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  ctx.fillStyle = "#ffffff";
+  ctx.font = "28px sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillText("Choose a Boon", canvas.width / 2, 100);
+
+  boonCardRects = [];
+  const cardW = 220, cardH = 260, gap = 30;
+  const totalW = cardW * 3 + gap * 2;
+  const startX = (canvas.width - totalW) / 2;
+  const cardY = 160;
+
+  BOONS.forEach((boon, i) => {
+    const cx = startX + i * (cardW + gap); // X position for this boon card
+    boonCardRects.push({ x: cx, y: cardY, w: cardW, h: cardH, id: boon.id }); // Store the rectangle for click detection
+
+    ctx.fillStyle = "#2a2230";
+    ctx.fillRect(cx, cardY, cardW, cardH);
+    ctx.strokeStyle = boon.color;
+    ctx.lineWidth = 3;
+    ctx.strokeRect(cx, cardY, cardW, cardH);
+
+    ctx.fillStyle = boon.color;
+    ctx.beginPath();
+    ctx.arc(cx + cardW / 2, cardY + 60, 30, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "16px sans-serif";
+    wrapText(boon.name, cx + cardW / 2, cardY + 120, cardW - 20, 20);
+
+    ctx.font = "13px sans-serif";
+    ctx.fillStyle = "#cccccc";
+    wrapText(boon.desc, cx + cardW / 2, cardY + 170, cardW - 30, 18);
+
+    const lvl = player.boons[boon.id];
+    if (lvl > 0) {
+      ctx.fillStyle = boon.color;
+      ctx.font = "12px sans-serif";
+      ctx.fillText("Currently level " + lvl, cx + cardW / 2, cardY + cardH - 20);
+    }
+  });
+}
+
+// Simple centered word-wrap helper for boon card text
+function wrapText(text, cx, y, maxWidth, lineHeight) {
+  const words = text.split(" ");
+  let line = "";
+  let lines = [];
+  for (const word of words) {
+    const test = line + word + " ";
+    if (ctx.measureText(test).width > maxWidth && line !== "") {
+      lines.push(line);
+      line = word + " ";
+    } else {
+      line = test;
+    }
+  }
+  lines.push(line);
+  ctx.textAlign = "center";
+  lines.forEach((l, i) => ctx.fillText(l.trim(), cx, y + i * lineHeight));
+}
+
+function renderEndScreen(text) {
+  ctx.fillStyle = "rgba(0,0,0,0.6)";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = "#ffffff";
+  ctx.font = "48px sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillText(text, canvas.width / 2, canvas.height / 2);
 }
 
 function render() {
@@ -353,45 +613,14 @@ function render() {
     ctx.fill();
   }
 
-  function drawEnemy(enemy, telegraphColor, normalColor) {
-    if (enemy.dead) return;
-    ctx.beginPath();
-    ctx.arc(enemy.x, enemy.y, enemy.radius, 0, Math.PI * 2);
-    ctx.fillStyle = enemy.state === "telegraph" ? telegraphColor : normalColor;
-    ctx.fill();
-
-    const barWidth = 40;
-    const pct = enemy.health / enemy.maxHealth;
-    ctx.fillStyle = "#333";
-    ctx.fillRect(enemy.x - barWidth / 2, enemy.y - enemy.radius - 12, barWidth, 6);
-    ctx.fillStyle = "#4caf50";
-    ctx.fillRect(enemy.x - barWidth / 2, enemy.y - enemy.radius - 12, barWidth * pct, 6);
-  }
-
-  drawEnemy(shade, "#ff8080", "#a03030");
-  drawEnemy(wretch, "#c080ff", "#8040c0");
+  for (const shade of shades) drawEnemy(shade, "#ff8080", "#a03030");
+  for (const wretch of wretches) drawEnemy(wretch, "#c080ff", "#8040c0");
 
   for (const p of projectiles) {
     ctx.beginPath();
     ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
     ctx.fillStyle = "#c080ff";
     ctx.fill();
-  }
-
-  // Player health bar (fixed corner position, unlike enemy bars which float above them)
-  const playerBarWidth = 200;
-  ctx.fillStyle = "#333";
-  ctx.fillRect(20, 20, playerBarWidth, 16);
-  ctx.fillStyle = "#e05050";
-  ctx.fillRect(20, 20, playerBarWidth * (player.health / player.maxHealth), 16);
-
-  if (gameOver) {
-    ctx.fillStyle = "rgba(0,0,0,0.6)";
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-    ctx.fillStyle = "#ffffff";
-    ctx.font = "48px sans-serif";
-    ctx.textAlign = "center";
-    ctx.fillText("YOU DIED", canvas.width / 2, canvas.height / 2);
   }
 
   // Player sprite — falls back to a gold circle if the image hasn't loaded
@@ -405,6 +634,12 @@ function render() {
     ctx.fillStyle = "#e0c060";
     ctx.fill();
   }
+
+  renderHUD();
+
+  if (gamePhase === "boon") renderBoonScreen();
+  else if (gamePhase === "won") renderEndScreen("VICTORY");
+  else if (gamePhase === "lost") renderEndScreen("YOU DIED");
 }
 
 requestAnimationFrame(gameLoop);
