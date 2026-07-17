@@ -64,6 +64,10 @@ canvas.addEventListener("click", (e) => {
     handleBoonClick(e);
     return;
   }
+  if (gamePhase === "won" || gamePhase === "lost") { // check for end screen click
+    handleRestartClick(e); // handle click on the restart button
+    return;
+  }
   if (gamePhase !== "fighting") return; // no attacking on won/lost screens
   if (attackTimer <= 0) attackTimer = attackDuration; // ignore clicks mid-swing
 });
@@ -218,6 +222,8 @@ const BOONS = [
 ];
 
 let boonCardRects = []; // stores the clickable areas for boon cards
+let restartButtonRect = null; // set by renderEndScreen(), checked by handleRestartClick()
+
 
 function handleBoonClick(e) {
   const rect = canvas.getBoundingClientRect();
@@ -704,6 +710,64 @@ function render() {
   else if (gamePhase === "lost") renderEndScreen("YOU DIED");
 
   ctx.restore(); // FIX: pairs with ctx.save() above
+}
+
+function handleRestartClick(e) {
+  if (!restartButtonRect) return;
+  const rect = canvas.getBoundingClientRect();
+  const clickX = e.clientX - rect.left;
+  const clickY = e.clientY - rect.top;
+  const b = restartButtonRect;
+
+  if (clickX >= b.x && clickX <= b.x + b.w && clickY >= b.y && clickY <= b.y + b.h) {
+    resetGame();
+  }
+}
+
+// Puts everything back to a fresh Round 1 — health, position, boons, and all (damage numbers, shake, flash) that could otherwise carry over
+function resetGame() {
+  player.health = player.maxHealth; // reset player health to full
+  player.x = 450; // reset player position to center of the canvas horizontally
+  player.y = 280; // reset player position to center of the canvas vertically
+  player.boons = { zeus: 0, poseidon: 0, artemis: 0 };
+
+  attackTimer = 0; // reset attack timer
+  dash.active = false; // reset dash state
+  dash.timer = 0; // reset dash timer
+  dash.cooldown = 0; // reset dash cooldown
+  dash.invulnerable = false; // reset dash invulnerability
+
+  damageNumbers.length = 0; // clear damage numbers
+  shakeTimer = 0; // reset screen shake
+  slashFlashTimer = 0; // reset slash flash
+
+  roundIndex = 0;
+  spawnRound(0); // also sets gamePhase back to "fighting"
+}
+
+function renderEndScreen(text) { // shows the end screen with a "Try Again" button
+  ctx.fillStyle = "rgba(0,0,0,0.6)";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = "#ffffff";
+  ctx.font = "48px sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillText(text, canvas.width / 2, canvas.height / 2 - 20);
+
+  // Try Again button — same click-rect pattern as the boon cards
+  const btnW = 180, btnH = 50;
+  const btnX = canvas.width / 2 - btnW / 2;
+  const btnY = canvas.height / 2 + 20;
+  restartButtonRect = { x: btnX, y: btnY, w: btnW, h: btnH };
+
+  ctx.fillStyle = "#4caf50";
+  ctx.fillRect(btnX, btnY, btnW, btnH);
+  ctx.strokeStyle = "#ffffff";
+  ctx.lineWidth = 2;
+  ctx.strokeRect(btnX, btnY, btnW, btnH);
+
+  ctx.fillStyle = "#ffffff";
+  ctx.font = "20px sans-serif";
+  ctx.fillText("Try Again", canvas.width / 2, btnY + btnH / 2 + 7);
 }
 
 requestAnimationFrame(gameLoop);
