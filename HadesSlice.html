@@ -13,118 +13,185 @@ const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d");
 
 let lastTime = performance.now();
-let gameOver = false;
+let gameOver = false; // stops update() once true; render() shows death screen
 
 // --- Assets ---
 const characterImg = new Image();
-characterImg.src = "character_transparent.png"; // must be in the same folder as this HTML file
+characterImg.src = "character_transparent.png"; // loads async — check .complete before drawing
 
 // --- Player ---
 const player = {
   x: 450,
   y: 280,
   radius: 16,
-  speed: 220,
-  facing: 0, // angle in radians, toward the mouse
+  speed: 220,   // px/sec
+  facing: 0,    // radians, always toward mouse
   health: 100,
   maxHealth: 100
 };
 
-// --- Mouse tracking ---
+// --- Mouse tracking (canvas-relative coords) ---
 const mouse = { x: 0, y: 0 };
-canvas.addEventListener("mousemove", (e) => { // Get mouse position relative to canvas
-  const rect = canvas.getBoundingClientRect(); // Get canvas position
-  mouse.x = e.clientX - rect.left; // Get mouse position relative to canvas
+canvas.addEventListener("mousemove", (e) => {
+  const rect = canvas.getBoundingClientRect();
+  mouse.x = e.clientX - rect.left;
   mouse.y = e.clientY - rect.top;
 });
 
 // --- Attack state ---
-let attackTimer = 0; // counts down while attack is active
-const attackDuration = 0.15; // seconds the hitbox is visible
-const attackRange = 50; // how far in front of the player it appears
+let attackTimer = 0;
+const attackDuration = 0.15; // hitbox lifetime after a click
+const attackRange = 50;      // hitbox distance in front of player
 
 canvas.addEventListener("click", () => {
-  if (attackTimer <= 0) {
-    attackTimer = attackDuration;
-  }
+  if (attackTimer <= 0) attackTimer = attackDuration; // ignore clicks mid-swing
 });
 
 // --- Input tracking ---
 const keys = {};
-window.addEventListener("keydown", (e) => {
-  keys[e.key.toLowerCase()] = true;
-});
-window.addEventListener("keyup", (e) => {
-  keys[e.key.toLowerCase()] = false;
-});
+window.addEventListener("keydown", (e) => keys[e.key.toLowerCase()] = true);
+window.addEventListener("keyup", (e) => keys[e.key.toLowerCase()] = false);
 
 // --- Dash state ---
 const dash = {
   active: false,
   timer: 0,
-  duration: 0.2,      // how long the dash lasts
-  speed: 600,          // pixels per second while dashing
-  cooldown: 0,         // counts down after a dash ends
+  duration: 0.2,
+  speed: 600,
+  cooldown: 0,
   cooldownDuration: 0.5,
-  dirX: 0,
-  dirY: 0,
-  invulnerable: false  // true while dashing = i-frames
+  dirX: 0, dirY: 0,      // locked in when dash starts
+  invulnerable: false    // true during dash.active = i-frames
 };
 
 window.addEventListener("keydown", (e) => {
-  if (e.key === " ") {
-    if (!dash.active && dash.cooldown <= 0) {
-      dash.active = true;
-      dash.timer = dash.duration;
-      dash.invulnerable = true;
+  if (e.key !== " ") return;
+  if (dash.active || dash.cooldown > 0) return;
 
-      // Determine dash direction
-      let dirX = 0;
-      let dirY = 0;
-      if (keys["w"] || keys["arrowup"]) dirY -= 1;
-      if (keys["s"] || keys["arrowdown"]) dirY += 1;
-      if (keys["a"] || keys["arrowleft"]) dirX -= 1;
-      if (keys["d"] || keys["arrowright"]) dirX += 1;
+  dash.active = true;
+  dash.timer = dash.duration;
+  dash.invulnerable = true;
 
-      // If no movement keys are pressed, use facing direction
-      if (dirX === 0 && dirY === 0) {
-        dirX = Math.cos(player.facing);
-        dirY = Math.sin(player.facing);
-      }
-
-      // Normalize the direction vector
-      const length = Math.sqrt(dirX * dirX + dirY * dirY);
-      if (length > 0) {
-        dash.dirX = dirX / length;
-        dash.dirY = dirY / length;
-      } else {
-        dash.dirX = 0;
-        dash.dirY = 0;
-      }
-    }
+  // Dash toward held movement keys; fall back to facing (mouse) if none held
+  let dirX = 0, dirY = 0;
+  if (keys["w"] || keys["arrowup"]) dirY -= 1;
+  if (keys["s"] || keys["arrowdown"]) dirY += 1;
+  if (keys["a"] || keys["arrowleft"]) dirX -= 1;
+  if (keys["d"] || keys["arrowright"]) dirX += 1;
+  if (dirX === 0 && dirY === 0) {
+    dirX = Math.cos(player.facing);
+    dirY = Math.sin(player.facing);
   }
+
+  const length = Math.sqrt(dirX * dirX + dirY * dirY);
+  dash.dirX = length > 0 ? dirX / length : 0; // normalize so diagonals aren't faster
+  dash.dirY = length > 0 ? dirY / length : 0;
 });
 
-// --- Shade enemy ---
+// --- Wretch enemy (ranged) ---
+// State machine: idle -> telegraph -> cooldown -> idle
+const wretch = {
+  x: 150,
+  y: 500,
+  radius: 18,
+  state: "idle",
+  stateTimer: 0,
+  telegraphDuration: 0.7,
+  cooldownDuration: 0.5,
+  aggroRange: 450,
+  preferredRange: 250,   // tries to keep this much distance
+  retreatSpeed: 100,
+  health: 30,
+  maxHealth: 30,
+  dead: false
+};
+
+const projectiles = []; // { x, y, dirX, dirY, speed, radius }
+
+function updateWretch(dt) {
+  if (wretch.dead) return;
+
+  const dx = player.x - wretch.x;
+  const dy = player.y - wretch.y;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+
+  if (wretch.state === "idle") {
+    if (dist >= wretch.aggroRange) return; // player not noticed
+
+    if (dist < wretch.preferredRange) {
+      // Too close — back away, then clamp to canvas so it can't retreat off-screen
+      const normX = dx / dist, normY = dy / dist;
+      wretch.x -= normX * wretch.retreatSpeed * dt;
+      wretch.y -= normY * wretch.retreatSpeed * dt;
+      wretch.x = Math.max(wretch.radius, Math.min(canvas.width - wretch.radius, wretch.x));
+      wretch.y = Math.max(wretch.radius, Math.min(canvas.height - wretch.radius, wretch.y));
+    } else if (dist > wretch.preferredRange + 30) {
+      // +30 buffer avoids flickering between retreat/telegraph at the boundary
+      wretch.state = "telegraph";
+      wretch.stateTimer = wretch.telegraphDuration;
+    }
+    // else: sits in the dead zone and holds still (intentional, prevents jitter)
+  }
+  else if (wretch.state === "telegraph") {
+    wretch.stateTimer -= dt;
+    if (wretch.stateTimer <= 0) {
+      // Throw fires toward player's position at release — doesn't home in flight
+      projectiles.push({
+        x: wretch.x, y: wretch.y,
+        dirX: dx / dist, dirY: dy / dist,
+        speed: 280, radius: 8
+      });
+      wretch.state = "cooldown";
+      wretch.stateTimer = wretch.cooldownDuration;
+    }
+  }
+  else if (wretch.state === "cooldown") {
+    wretch.stateTimer -= dt;
+    if (wretch.stateTimer <= 0) wretch.state = "idle";
+  }
+}
+
+function updateProjectiles(dt) {
+  // Iterate backwards so splice() doesn't skip the next element
+  for (let i = projectiles.length - 1; i >= 0; i--) {
+    const p = projectiles[i];
+    p.x += p.dirX * p.speed * dt;
+    p.y += p.dirY * p.speed * dt;
+
+    // Off-screen cleanup (20px buffer) — prevents the array growing forever
+    if (p.x < -20 || p.x > canvas.width + 20 || p.y < -20 || p.y > canvas.height + 20) {
+      projectiles.splice(i, 1);
+      continue;
+    }
+
+    const dist = Math.sqrt((p.x - player.x) ** 2 + (p.y - player.y) ** 2);
+    if (dist < (p.radius + player.radius) && !dash.invulnerable) {
+      player.health -= 10;
+      projectiles.splice(i, 1); // consumed on hit
+    }
+  }
+}
+
+// --- Shade enemy (melee) ---
+// State machine: idle -> telegraph -> lunge -> cooldown -> idle
 const shade = {
   x: 700,
   y: 150,
   radius: 18,
-  state: "idle",       // "idle" | "telegraph" | "lunge" | "cooldown"
+  state: "idle",
   stateTimer: 0,
   telegraphDuration: 0.6,
   lungeDuration: 0.25,
   lungeSpeed: 500,
   cooldownDuration: 0.8,
-  lungeDirX: 0,
-  lungeDirY: 0,
+  lungeDirX: 0, lungeDirY: 0, // locked in when the lunge starts
   chaseSpeed: 120,
-  aggroRange: 400,     // distance at which it notices the player
-  attackRange: 60,     // distance at which it starts telegraphing instead of chasing
+  aggroRange: 400,
+  attackRange: 60,
   health: 40,
   maxHealth: 40,
-  hitThisSwing: false,       // prevents one attack from hitting multiple times
-  hitPlayerThisLunge: false, // prevents one lunge from hitting the player multiple times
+  hitThisSwing: false,       // blocks one player swing from hitting twice
+  hitPlayerThisLunge: false, // blocks one lunge from hitting the player twice
   dead: false
 };
 
@@ -134,160 +201,142 @@ function updateShade(dt) {
   const dx = player.x - shade.x;
   const dy = player.y - shade.y;
   const dist = Math.sqrt(dx * dx + dy * dy);
-  // ... rest stays the same
+
   if (shade.state === "idle") {
-    if (dist < shade.aggroRange) { // Player is within aggro range
-      if (dist > shade.attackRange) { // Player is outside attack range, chase the player
-        const normX = dx / dist; // making the vector have a length of 1
-        const normY = dy / dist;
-        shade.x += normX * shade.chaseSpeed * dt;
-        shade.y += normY * shade.chaseSpeed * dt; // Move shade toward the player
-      } else {
-        // Start telegraphing
-        shade.state = "telegraph";
-        shade.stateTimer = shade.telegraphDuration;
-      }
+    if (dist >= shade.aggroRange) return;
+
+    if (dist > shade.attackRange) {
+      // Chase, clamped to canvas bounds
+      const normX = dx / dist, normY = dy / dist;
+      shade.x += normX * shade.chaseSpeed * dt;
+      shade.y += normY * shade.chaseSpeed * dt;
+      shade.x = Math.max(shade.radius, Math.min(canvas.width - shade.radius, shade.x));
+      shade.y = Math.max(shade.radius, Math.min(canvas.height - shade.radius, shade.y));
+    } else {
+      shade.state = "telegraph";
+      shade.stateTimer = shade.telegraphDuration;
     }
   }
   else if (shade.state === "telegraph") {
-    shade.stateTimer -= dt; // Count down the telegraph timer
-    if (shade.stateTimer <= 0) { // Telegraphing is done, start lunging
-      shade.state = "lunge"; // Change state to lunge
+    shade.stateTimer -= dt;
+    if (shade.stateTimer <= 0) {
+      // Lock lunge direction now, so dashing sideways during wind-up can dodge it
+      shade.state = "lunge";
       shade.stateTimer = shade.lungeDuration;
-      const normX = dx / dist;
-      const normY = dy / dist;
-      shade.lungeDirX = normX;
-      shade.lungeDirY = normY; // Store the current direction toward the player
+      shade.lungeDirX = dx / dist;
+      shade.lungeDirY = dy / dist;
     }
   }
   else if (shade.state === "lunge") {
-    shade.stateTimer -= dt; // Count down the lunge timer
+    shade.stateTimer -= dt;
     shade.x += shade.lungeDirX * shade.lungeSpeed * dt;
     shade.y += shade.lungeDirY * shade.lungeSpeed * dt;
-    if (shade.stateTimer <= 0) { // Lunge is done, start cooldown
+    if (shade.stateTimer <= 0) {
       shade.state = "cooldown";
       shade.stateTimer = shade.cooldownDuration;
     }
   }
   else if (shade.state === "cooldown") {
-    shade.stateTimer -= dt; // Count down the cooldown timer
-    if (shade.stateTimer <= 0) { // Cooldown is done, return to idle
-      shade.state = "idle";
-    }
+    shade.stateTimer -= dt;
+    if (shade.stateTimer <= 0) shade.state = "idle";
   }
 }
 
-
 function checkPlayerAttackHitsShade() {
   if (attackTimer <= 0) {
-    shade.hitThisSwing = false;
+    shade.hitThisSwing = false; // reset so the next swing can land
     return;
   }
-  const hitboxX = player.x + Math.cos(player.facing) * attackRange;
-  const hitboxY = player.y + Math.sin(player.facing) * attackRange;// calculate distance between (hitboxX, hitboxY) and (shade.x, shade.y)
 
+  // Same hitbox position formula used in render(), so hit detection matches what's drawn
+  const hitboxX = player.x + Math.cos(player.facing) * attackRange;
+  const hitboxY = player.y + Math.sin(player.facing) * attackRange;
   const dx = hitboxX - shade.x;
   const dy = hitboxY - shade.y;
   const distance = Math.sqrt(dx * dx + dy * dy);
 
-  if (distance < (10 + shade.radius) && !shade.hitThisSwing) {
+  if (distance < (10 + shade.radius) && !shade.hitThisSwing) { // 10 = hitbox visual radius
     shade.health -= 10;
     shade.hitThisSwing = true;
-    if (shade.health <= 0) {
-      shade.dead = true;
-    }
+    if (shade.health <= 0) shade.dead = true;
   }
 }
 
 function checkShadeHitsPlayer() {
   if (shade.dead) return;
 
+  // Contact damage only during an active lunge (telegraph is the warning, not a hit)
   if (shade.state !== "lunge") {
-    shade.hitPlayerThisLunge = false; // the NEXT lunge is able to hit again
+    shade.hitPlayerThisLunge = false;
     return;
   }
-  const distance = Math.sqrt((player.x - shade.x) ** 2 + (player.y - shade.y) ** 2);
 
+  const distance = Math.sqrt((player.x - shade.x) ** 2 + (player.y - shade.y) ** 2);
   if (distance < (player.radius + shade.radius) && !shade.hitPlayerThisLunge && !dash.invulnerable) {
-    player.health -= 15; // Subtract damage from player health
-    shade.hitPlayerThisLunge = true; // Mark that the shade has hit the player this lunge
-  } 
+    player.health -= 15;
+    shade.hitPlayerThisLunge = true;
+  }
 }
 
 function gameLoop(now) {
-  const dt = (now - lastTime) / 1000; // Convert milliseconds to seconds
-  lastTime = now; // Update lastTime for the next frame
-
+  const dt = (now - lastTime) / 1000; // seconds since last frame — keeps speeds framerate-independent
+  lastTime = now;
   update(dt);
   render();
-
   requestAnimationFrame(gameLoop);
 }
 
 function update(dt) {
   if (gameOver) return;
-  if (keys["w"] || keys["arrowup"]) {
-    player.y -= player.speed * dt;
-  }
-  if (keys["s"] || keys["arrowdown"]) {
-    player.y += player.speed * dt;
-  }
-  if (keys["a"] || keys["arrowleft"]) {
-    player.x -= player.speed * dt;
-  }
-  if (keys["d"] || keys["arrowright"]) {
-    player.x += player.speed * dt;
-  }
 
-  const deltaX = mouse.x - player.x;
-  const deltaY = mouse.y - player.y;
-  player.facing = Math.atan2(deltaY, deltaX);
+  // --- Movement ---
+  if (keys["w"] || keys["arrowup"]) player.y -= player.speed * dt;
+  if (keys["s"] || keys["arrowdown"]) player.y += player.speed * dt;
+  if (keys["a"] || keys["arrowleft"]) player.x -= player.speed * dt;
+  if (keys["d"] || keys["arrowright"]) player.x += player.speed * dt;
 
-  if (attackTimer > 0) {
-    attackTimer -= dt;
-  }
+  // --- Facing (toward mouse) ---
+  player.facing = Math.atan2(mouse.y - player.y, mouse.x - player.x);
 
-  if (dash.active) { // If dash is active, move the player in the dash direction
-    dash.timer -= dt; // Decrease the dash timer
-    if (dash.timer <= 0) { // If dash duration is over, reset dash state
+  if (attackTimer > 0) attackTimer -= dt;
+
+  // --- Dash ---
+  if (dash.active) {
+    dash.timer -= dt;
+    if (dash.timer <= 0) {
       dash.active = false;
       dash.invulnerable = false;
-      dash.cooldown = dash.cooldownDuration; // Start the cooldown timer
+      dash.cooldown = dash.cooldownDuration;
     } else {
-      player.x += dash.dirX * dash.speed * dt; // Move the player in the dash direction
+      player.x += dash.dirX * dash.speed * dt;
       player.y += dash.dirY * dash.speed * dt;
     }
-  } else if (dash.cooldown > 0) { // If dash is not active but cooldown is still running, decrease it
+  } else if (dash.cooldown > 0) {
     dash.cooldown -= dt;
   }
 
+  // --- Enemies & combat ---
   updateShade(dt);
   checkPlayerAttackHitsShade();
   checkShadeHitsPlayer();
+  updateWretch(dt);
+  updateProjectiles(dt);
 
-  // Lose condition: player health depleted
-  if (player.health <= 0) {
-    gameOver = true;
-  }
+  if (player.health <= 0) gameOver = true;
 }
-
 
 function render() {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-
-  // Facing indicator line
+  // Facing indicator (aim line toward mouse)
   ctx.beginPath();
   ctx.moveTo(player.x, player.y);
-  ctx.lineTo(
-    player.x + Math.cos(player.facing) * 30,
-    player.y + Math.sin(player.facing) * 30
-  );
+  ctx.lineTo(player.x + Math.cos(player.facing) * 30, player.y + Math.sin(player.facing) * 30);
   ctx.strokeStyle = "#ffffff";
   ctx.lineWidth = 3;
   ctx.stroke();
 
-  // Attack hitbox (only while attacking)
+  // Attack hitbox, visible only during its short active window
   if (attackTimer > 0) {
     const hitboxX = player.x + Math.cos(player.facing) * attackRange;
     const hitboxY = player.y + Math.sin(player.facing) * attackRange;
@@ -297,31 +346,38 @@ function render() {
     ctx.fill();
   }
 
-  // Draw Shade (only while alive)
-  if (!shade.dead) {
+  function drawEnemy(enemy, telegraphColor, normalColor) {
+    if (enemy.dead) return;
     ctx.beginPath();
-    ctx.arc(shade.x, shade.y, shade.radius, 0, Math.PI * 2);
-    ctx.fillStyle = shade.state === "telegraph" ? "#ff8080" : "#a03030";
+    ctx.arc(enemy.x, enemy.y, enemy.radius, 0, Math.PI * 2);
+    ctx.fillStyle = enemy.state === "telegraph" ? telegraphColor : normalColor;
     ctx.fill();
 
-    // Shade health bar
     const barWidth = 40;
-    const healthPercent = shade.health / shade.maxHealth; // Calculate health percentage by dividing current health by max health
+    const pct = enemy.health / enemy.maxHealth;
     ctx.fillStyle = "#333";
-    ctx.fillRect(shade.x - barWidth / 2, shade.y - shade.radius - 12, barWidth, 6); // background bar
+    ctx.fillRect(enemy.x - barWidth / 2, enemy.y - enemy.radius - 12, barWidth, 6);
     ctx.fillStyle = "#4caf50";
-    ctx.fillRect(shade.x - barWidth / 2, shade.y - shade.radius - 12, barWidth * healthPercent, 6);
+    ctx.fillRect(enemy.x - barWidth / 2, enemy.y - enemy.radius - 12, barWidth * pct, 6);
   }
 
-  // Player health bar (top-left corner)
+  drawEnemy(shade, "#ff8080", "#a03030");
+  drawEnemy(wretch, "#c080ff", "#8040c0");
+
+  for (const p of projectiles) {
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
+    ctx.fillStyle = "#c080ff";
+    ctx.fill();
+  }
+
+  // Player health bar (fixed corner position, unlike enemy bars which float above them)
   const playerBarWidth = 200;
-  const playerHealthPercent = player.health / player.maxHealth; // Calculate health percentage by dividing current health by max health
   ctx.fillStyle = "#333";
   ctx.fillRect(20, 20, playerBarWidth, 16);
   ctx.fillStyle = "#e05050";
-  ctx.fillRect(20, 20, playerBarWidth * playerHealthPercent, 16);
+  ctx.fillRect(20, 20, playerBarWidth * (player.health / player.maxHealth), 16);
 
-  // Game over overlay
   if (gameOver) {
     ctx.fillStyle = "rgba(0,0,0,0.6)";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -330,16 +386,18 @@ function render() {
     ctx.textAlign = "center";
     ctx.fillText("YOU DIED", canvas.width / 2, canvas.height / 2);
   }
-  // Draw player using the character image
-  const imgHeight = player.radius * 4; // pick a height that looks right
-  const imgWidth = imgHeight * (characterImg.width / characterImg.height);
-  ctx.drawImage(
-    characterImg,
-    player.x - imgWidth / 2,
-    player.y - imgHeight / 2,
-    imgWidth,
-    imgHeight
-  );
+
+  // Player sprite — falls back to a gold circle if the image hasn't loaded
+  // (or failed), since drawImage() on a broken image would throw and freeze render()
+  const imgSize = player.radius * 3;
+  if (characterImg.complete && characterImg.naturalWidth > 0) {
+    ctx.drawImage(characterImg, player.x - imgSize / 2, player.y - imgSize / 2, imgSize, imgSize);
+  } else {
+    ctx.beginPath();
+    ctx.arc(player.x, player.y, player.radius, 0, Math.PI * 2);
+    ctx.fillStyle = "#e0c060";
+    ctx.fill();
+  }
 }
 
 requestAnimationFrame(gameLoop);
